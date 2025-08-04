@@ -1,0 +1,30 @@
+{
+  "name": "@modelcontextprotocol/server-filesystem",
+  "version": "1.0.0",
+  "description": "Enhanced MCP server for filesystem operations",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "mcp-server-filesystem": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "node --test src/**/*.test.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "archiver": "^6.0.0",
+    "chokidar": "^3.5.0",
+    "diff": "^5.2.0",
+    "mime-types": "^2.1.0",
+    "minimatch": "^9.0.0",
+    "unzipper": "^0.10.0",
+    "zod": "^3.22.0",
+    "zod-to-json-schema": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.9.2"
+  }
+}
