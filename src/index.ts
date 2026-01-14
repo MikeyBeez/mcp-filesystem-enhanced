@@ -375,6 +375,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         description: "Returns the list of root directories that this server is allowed to access. Use this to understand which directories are available before trying to access files.",
         inputSchema: zodToJsonSchema(z.object({})),
       },
+      {
+        name: "help",
+        description: "Get comprehensive documentation for all filesystem-enhanced functions",
+        inputSchema: zodToJsonSchema(z.object({})),
+      }
     ],
   };
 });
@@ -691,6 +696,159 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     case "list_allowed_directories": {
       return {
         content: [{ type: "text", text: validDirectories.join('\n') }],
+      };
+    }
+
+    case "help": {
+      const helpText = `
+# 🗄 Enhanced Filesystem Operations - Comprehensive File Management
+
+## Purpose
+Enhanced MCP server for filesystem operations with intelligent suggestions, error handling, and productivity features.
+
+## Available Tools
+
+### File Reading Operations
+
+#### read_text_file
+Read complete contents of a text file:
+- **path**: File path to read
+- **head**: Read only first N lines (optional)
+- **tail**: Read only last N lines (optional)
+- Handles various text encodings with detailed error messages
+
+#### read_media_file
+Read image or audio files as base64:
+- **path**: Media file path
+- Returns base64 encoded data with MIME type
+
+#### read_multiple_files
+Read multiple files simultaneously (efficient batch operation):
+- **paths**: Array of file paths
+- More efficient than individual reads
+- Failed reads don't stop entire operation
+
+### File Writing Operations
+
+#### write_file 🎆 ENHANCED
+Create or overwrite files with intelligent suggestions:
+- **path**: File path to write
+- **content**: Content to write
+- ✨ **ENHANCED**: Provides gentle bullshit detector suggestions for marketing language, long content, or potentially problematic text to improve content quality and credibility
+
+#### edit_file
+Make line-based edits with git-style diff output:
+- **path**: File to edit
+- **edits**: Array of {oldText, newText} replacements
+- **dryRun**: Preview changes without applying (default: false)
+- Returns git-style diff showing changes
+
+### Directory Operations
+
+#### create_directory
+Create directories with nested path support:
+- **path**: Directory path to create
+- Creates multiple nested directories in one operation
+- Succeeds silently if directory exists
+
+#### list_directory
+Get detailed file and directory listing:
+- **path**: Directory to list
+- Results clearly marked with [FILE] and [DIR] prefixes
+
+#### list_directory_with_sizes
+List directory contents with file sizes:
+- **path**: Directory to list
+- **sortBy**: Sort by name or size (default: name)
+- Shows sizes for better space management
+
+#### directory_tree
+Get recursive JSON tree structure:
+- **path**: Root directory
+- Returns nested JSON with name, type, and children
+- 2-space indented for readability
+
+### File Management
+
+#### move_file
+Move or rename files and directories:
+- **source**: Current path
+- **destination**: New path
+- Works across directories, fails if destination exists
+
+#### get_file_info
+Retrieve comprehensive file metadata:
+- **path**: File or directory path
+- Returns size, timestamps, permissions, type
+
+### Search Operations
+
+#### search_files 🎆 ENHANCED
+Recursive file and directory search:
+- **path**: Starting directory
+- **pattern**: Search pattern (case-insensitive partial matching)
+- **excludePatterns**: Patterns to exclude (optional)
+- ✨ **ENHANCED**: Uses 'locate' command when available for dramatically faster search performance (up to 1000x faster)
+- Returns full paths to all matches
+
+### System Information
+
+#### list_allowed_directories
+Get list of accessible root directories:
+- No parameters required
+- Essential for understanding access boundaries
+
+## Enhanced Features
+
+### Intelligent Content Analysis
+- **Bullshit Detection**: write_file provides gentle suggestions for improving content quality
+- **Marketing Language Detection**: Identifies potentially problematic promotional language
+- **Credibility Enhancement**: Suggests ways to make content more trustworthy
+
+### Performance Optimizations
+- **Locate Integration**: search_files uses system locate for massive speed improvements
+- **Batch Operations**: read_multiple_files processes multiple files efficiently
+- **Smart Caching**: Optimized for repeated operations
+
+### Developer Experience
+- **Clear Prefixes**: [FILE] and [DIR] prefixes for easy parsing
+- **Git-style Diffs**: edit_file shows changes clearly
+- **Detailed Errors**: Comprehensive error messages with solutions
+- **Dry Run Support**: Preview changes before applying
+
+## Common Workflows
+
+### File Analysis
+1. list_allowed_directories - understand access boundaries
+2. directory_tree - get project structure
+3. search_files - find specific files
+4. read_text_file - examine contents
+
+### Content Creation
+1. read_text_file - check existing content
+2. write_file - create with quality suggestions
+3. edit_file - make targeted improvements
+4. get_file_info - verify results
+
+### Project Management
+1. list_directory_with_sizes - assess space usage
+2. search_files - locate project files
+3. read_multiple_files - batch content analysis
+4. create_directory - organize structure
+
+## Error Handling
+- Comprehensive error messages with actionable suggestions
+- Graceful handling of permission issues
+- Clear feedback on path resolution problems
+- Safe operations with existence checking
+
+The enhanced filesystem server provides production-ready file operations with intelligent assistance, performance optimizations, and developer-friendly features.
+`;
+      return {
+        content: [{ 
+          type: "text", 
+          text: helpText 
+        }]
       };
     }
 
