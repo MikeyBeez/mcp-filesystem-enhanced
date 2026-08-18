@@ -281,43 +281,131 @@ describe('get_file_info', () => {
   });
 });
 
-describe('known issues', () => {
-  // edit_file uses String.prototype.replace with a plain string, which replaces
-  // only the FIRST occurrence and — worse — silently succeeds when the text is
-  // not present at all. An agent that asks for an edit and gets "Applied
-  // changes" back has no way to tell the edit did nothing.
-  test('an edit whose oldText is absent should report a failure', { todo: true }, async () => {
+describe('edit_file correctness (regressions fixed 2026-08-17)', () => {
+  test('an edit whose oldText is absent is an error, not a silent no-op', async () => {
     const before = fs.readFileSync(p('hello.txt'), 'utf8');
-    const out = await ctx.call('edit_file', {
+    const msg = await ctx.expectError('edit_file', {
       path: p('hello.txt'),
       edits: [{ oldText: 'THIS TEXT IS NOT IN THE FILE', newText: 'anything' }],
     });
-    const after = fs.readFileSync(p('hello.txt'), 'utf8');
-    assert.equal(after, before, 'nothing changed, as expected');
-    assert.doesNotMatch(out, /Applied changes/,
-      'a no-op edit reports success, so a failed edit is indistinguishable from a real one');
+    assert.ok(msg, 'a missing oldText must surface as an error');
+    assert.match(msg, /text not found/i);
+    assert.equal(fs.readFileSync(p('hello.txt'), 'utf8'), before, 'the file must be left alone');
   });
 
-  test('an edit should replace every occurrence, or say it did not', { todo: true }, async () => {
-    fs.writeFileSync(p('dup.txt'), 'target\nmiddle\ntarget\n');
+  test('the error names the file and shows the text it looked for', async () => {
+    const msg = await ctx.expectError('edit_file', {
+      path: p('hello.txt'),
+      edits: [{ oldText: 'ABSENT MARKER', newText: 'x' }],
+    });
+    assert.match(msg, /hello\.txt/);
+    assert.match(msg, /ABSENT MARKER/);
+  });
+
+  test('a long missing oldText is truncated in the error rather than dumped', async () => {
+    const long = 'Z'.repeat(300);
+    const msg = await ctx.expectError('edit_file', { path: p('hello.txt'), edits: [{ oldText: long, newText: 'x' }] });
+    assert.ok(msg.length < 300, 'the error should not echo the whole search string');
+    assert.match(msg, /\.\.\./);
+  });
+
+  test('an empty oldText is rejected instead of shredding the file', async () => {
+    const before = fs.readFileSync(p('hello.txt'), 'utf8');
+    const msg = await ctx.expectError('edit_file', { path: p('hello.txt'), edits: [{ oldText: '', newText: 'X' }] });
+    assert.ok(msg, 'an empty oldText must be rejected');
+    assert.equal(fs.readFileSync(p('hello.txt'), 'utf8'), before);
+  });
+
+  test('every occurrence is replaced, not just the first', async () => {
+    fs.writeFileSync(p('dup.txt'), 'target\nmiddle\ntarget\nend\ntarget\n');
     await ctx.call('edit_file', { path: p('dup.txt'), edits: [{ oldText: 'target', newText: 'REPLACED' }] });
-    assert.equal(fs.readFileSync(p('dup.txt'), 'utf8'), 'REPLACED\nmiddle\nREPLACED\n',
-      'only the first occurrence is replaced, with no warning');
+    assert.equal(fs.readFileSync(p('dup.txt'), 'utf8'), 'REPLACED\nmiddle\nREPLACED\nend\nREPLACED\n');
   });
 
-  // isPathAllowed resolves and normalises the string but never calls realpath,
-  // so a symlink living inside the sandbox and pointing outside it passes the
-  // check, and the filesystem call then follows the link.
-  test('a symlink inside the root must not reach outside it', { todo: true }, async () => {
+  test('replacement text is inserted literally, not as a regex template', async () => {
+    // '$&' and '$1' are substitution patterns to String.replace. Using
+    // split/join means they land as plain characters.
+    fs.writeFileSync(p('tpl.txt'), 'AAA\n');
+    await ctx.call('edit_file', { path: p('tpl.txt'), edits: [{ oldText: 'AAA', newText: '$& and $1' }] });
+    assert.equal(fs.readFileSync(p('tpl.txt'), 'utf8'), '$& and $1\n');
+  });
+
+  test('a failing edit aborts the batch and leaves earlier edits unwritten', async () => {
+    const before = fs.readFileSync(p('hello.txt'), 'utf8');
+    const msg = await ctx.expectError('edit_file', {
+      path: p('hello.txt'),
+      edits: [{ oldText: 'line one', newText: 'GOOD' }, { oldText: 'NOT THERE', newText: 'bad' }],
+    });
+    assert.ok(msg);
+    assert.equal(fs.readFileSync(p('hello.txt'), 'utf8'), before,
+      'a partial write would be worse than no write');
+  });
+
+  test('dryRun still validates, so a preview of a bad edit fails too', async () => {
+    const msg = await ctx.expectError('edit_file', {
+      path: p('hello.txt'),
+      edits: [{ oldText: 'NOT THERE', newText: 'x' }],
+      dryRun: true,
+    });
+    assert.ok(msg, 'dryRun should report the same problem a real run would');
+  });
+});
+
+describe('symlink containment (regression fixed 2026-08-17)', () => {
+  test('a symlink inside the root cannot read a file outside it', async () => {
     fs.symlinkSync(path.join(ctx.outside, 'secret.txt'), p('escape.txt'));
     const msg = await ctx.expectError('read_text_file', { path: p('escape.txt') });
-    assert.ok(msg, 'following a symlink out of the sandbox should be denied');
+    assert.ok(msg, 'following a symlink out of the sandbox must be denied');
+    assert.match(msg, /Access denied/);
   });
 
-  // fs.rename overwrites silently.
-  test('move_file should not clobber an existing destination', { todo: true }, async () => {
+  test('a symlinked directory inside the root cannot be listed', async () => {
+    fs.symlinkSync(ctx.outside, p('escape_dir'));
+    const msg = await ctx.expectError('list_directory', { path: p('escape_dir') });
+    assert.ok(msg);
+    assert.match(msg, /Access denied/);
+  });
+
+  test('writing through a symlink that points outside is denied', async () => {
+    const target = path.join(ctx.outside, 'planted-via-link.txt');
+    fs.symlinkSync(target, p('write_escape.txt'));
+    const msg = await ctx.expectError('write_file', { path: p('write_escape.txt'), content: 'nope' });
+    assert.ok(msg);
+    assert.equal(fs.existsSync(target), false, 'nothing may be created outside the root');
+  });
+
+  test('a symlink that stays inside the root still works', async () => {
+    fs.symlinkSync(p('nested', 'inner.txt'), p('friendly.txt'));
+    assert.equal(await ctx.call('read_text_file', { path: p('friendly.txt') }), 'inner content\n');
+  });
+
+  test('creating a new file in a real directory still works', async () => {
+    // The allow-check has to handle paths that do not exist yet by resolving
+    // the nearest existing ancestor. This is the guard on that logic.
+    await ctx.call('write_file', { path: p('nested', 'deep', 'brand-new.txt'), content: 'ok\n' });
+    assert.equal(fs.readFileSync(p('nested', 'deep', 'brand-new.txt'), 'utf8'), 'ok\n');
+  });
+
+  test('creating a file under a not-yet-existing directory chain is still allowed', async () => {
+    await ctx.call('create_directory', { path: p('brand', 'new', 'chain') });
+    await ctx.call('write_file', { path: p('brand', 'new', 'chain', 'f.txt'), content: 'deep\n' });
+    assert.equal(fs.readFileSync(p('brand', 'new', 'chain', 'f.txt'), 'utf8'), 'deep\n');
+  });
+});
+
+describe('move_file safety (regression fixed 2026-08-17)', () => {
+  test('refuses to overwrite an existing destination', async () => {
     fs.writeFileSync(p('victim.txt'), 'important\n');
     const msg = await ctx.expectError('move_file', { source: p('hello.txt'), destination: p('victim.txt') });
-    assert.ok(msg, 'overwriting an existing file via move should require an explicit flag');
+    assert.ok(msg, 'an overwriting move must be refused');
+    assert.match(msg, /already exists/i);
+    assert.equal(fs.readFileSync(p('victim.txt'), 'utf8'), 'important\n', 'the victim must survive');
+    assert.equal(fs.existsSync(p('hello.txt')), true, 'the source must survive too');
+  });
+
+  test('refuses to overwrite an existing directory', async () => {
+    const msg = await ctx.expectError('move_file', { source: p('hello.txt'), destination: p('nested') });
+    assert.ok(msg);
+    assert.match(msg, /already exists/i);
   });
 });

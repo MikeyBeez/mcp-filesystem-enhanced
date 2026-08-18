@@ -7,6 +7,7 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import fs from "fs/promises";
+import { realpathSync, lstatSync, readlinkSync } from "node:fs";
 import path from "path";
 import { z } from "zod";
 import { zodToJsonSchema } from "zod-to-json-schema";
@@ -23,7 +24,9 @@ if (allowedDirectories.length === 0) {
 const validDirectories: string[] = [];
 for (const dir of allowedDirectories) {
   try {
-    const resolved = path.resolve(dir);
+    // realpath, not just resolve: on macOS /tmp and /var are themselves
+    // symlinks, so an un-resolved root would never match a resolved path.
+    const resolved = realpathSync(path.resolve(dir));
     const stats = await fs.stat(resolved);
     if (stats.isDirectory()) {
       validDirectories.push(resolved);
@@ -40,12 +43,49 @@ if (validDirectories.length === 0) {
 
 console.error("Allowed directories:", validDirectories);
 
+// Resolve a path for the allow-check, following symlinks.
+//
+// path.resolve alone is not enough: a symlink living inside an allowed root can
+// point anywhere, and the string check would pass while the filesystem call
+// followed the link straight out of the sandbox.
+//
+// A path being created does not exist yet, so realpath would throw. Walk up to
+// the nearest ancestor that DOES exist, resolve that, and re-attach the tail —
+// the ancestor is what determines where the new file actually lands.
+function resolveForCheck(requestPath: string, depth = 0): string | null {
+  if (depth > 32) return null; // symlink loop
+  const absolute = path.resolve(requestPath);
+
+  // Fast path: the target exists, so realpath gives the fully-resolved answer.
+  try {
+    return realpathSync(absolute);
+  } catch { /* missing, or a dangling symlink — handled below */ }
+
+  // A DANGLING symlink still points somewhere, and writing through it creates
+  // the file at the target. realpath throws on it, so resolve it by hand;
+  // otherwise a broken link is a free pass out of the sandbox.
+  try {
+    if (lstatSync(absolute).isSymbolicLink()) {
+      const target = readlinkSync(absolute);
+      return resolveForCheck(path.resolve(path.dirname(absolute), target), depth + 1);
+    }
+  } catch { /* not a symlink either — genuinely absent */ }
+
+  // Genuinely absent: the nearest existing ancestor decides where it lands, so
+  // resolve that and re-attach this segment.
+  const parent = path.dirname(absolute);
+  if (parent === absolute) return null;
+  const realParent = resolveForCheck(parent, depth + 1);
+  return realParent === null ? null : path.join(realParent, path.basename(absolute));
+}
+
 // Helper to validate paths
 function isPathAllowed(requestPath: string): boolean {
-  const absolute = path.resolve(requestPath);
-  const normalized = path.normalize(absolute);
-  
-  return validDirectories.some(dir => 
+  const resolved = resolveForCheck(requestPath);
+  if (resolved === null) return false;
+  const normalized = path.normalize(resolved);
+
+  return validDirectories.some(dir =>
     normalized.startsWith(dir + path.sep) || normalized === dir
   );
 }
@@ -535,9 +575,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       let content = await fs.readFile(filePath, "utf-8");
       const originalContent = content;
       
-      // Apply edits
+      // Apply edits.
+      // Two deliberate behaviours here, both learned the hard way:
+      //  - An oldText that is not present is an ERROR. Silently reporting
+      //    success made a failed edit indistinguishable from a real one.
+      //  - Every occurrence is replaced, not just the first. String.replace
+      //    with a plain string only replaces the first match, which quietly
+      //    left later copies untouched.
       for (const edit of edits) {
-        content = content.replace(edit.oldText, edit.newText);
+        if (edit.oldText === "") {
+          throw new Error(`Edit failed: oldText is empty for ${filePath}`);
+        }
+        if (!content.includes(edit.oldText)) {
+          const preview = edit.oldText.length > 80 ? edit.oldText.slice(0, 80) + "..." : edit.oldText;
+          throw new Error(`Edit failed: text not found in ${filePath}: ${JSON.stringify(preview)}`);
+        }
+        content = content.split(edit.oldText).join(edit.newText);
       }
       
       if (!dryRun) {
@@ -646,6 +699,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       
       if (!isPathAllowed(source) || !isPathAllowed(destination)) {
         throw new Error(`Access denied: ${source} -> ${destination}`);
+      }
+      
+      // fs.rename overwrites silently. Refuse rather than destroy something
+      // the caller did not know was there.
+      let destinationExists = true;
+      try {
+        await fs.stat(destination);
+      } catch {
+        destinationExists = false;
+      }
+      if (destinationExists) {
+        throw new Error(`Destination already exists: ${destination} (move aborted so nothing is overwritten)`);
       }
       
       await fs.rename(source, destination);
